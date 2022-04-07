@@ -52,6 +52,7 @@ from itsm.component.constants import (
     TIME_DELTA,
     SERVICE_SOURCE_CHOICES,
     DEFAULT_PROJECT_PROJECT_KEY,
+    EMPTY_DICT,
 )
 from itsm.component.db.models import BaseMpttModel
 from itsm.component.drf.mixins import ObjectManagerMixin
@@ -460,6 +461,40 @@ class Service(ObjectManagerMixin, Model):
     @classmethod
     def validate_service_name(cls, service_name):
         return cls.objects.filter(name=service_name).exists()
+
+    def update_periodic_task(self, periodic_task):
+        """
+        {
+            config = {},
+            cron_config = {},
+            config = {}
+        }
+        """
+        # 当传进来是一个空时，删除之前当配置
+        if not periodic_task:
+            # 同时删除所有的周期任务
+            ServicePeriodicTask.objects.delete_periodic_task(service_id=self.id)
+        else:
+            #
+            cron_config = periodic_task.get("cron_config", {})
+            config = periodic_task.get("config", {})
+
+            task = ServicePeriodicTask.objects.filter(service_id=self.id).first()
+            if task is not None:
+                if task.is_changed(cron_config):
+                    task.cron_config = cron_config
+                    task.config = config
+                    task.save()
+                    ServicePeriodicTask.objects.create_periodic_task(task)
+            else:
+                ServicePeriodicTask.objects.create(
+                    config=config,
+                    cron_config=cron_config,
+                    project_key=self.project_key,
+                    service_id=self.id,
+                    timezone=settings.TIME_ZONE,
+                )
+                ServicePeriodicTask.objects.create_periodic_task(task)
 
     def tag_data(self):
         from itsm.workflow.models import Workflow
@@ -1337,3 +1372,46 @@ class PropertyRecord(Model):
     @property
     def name(self):
         return self.pk_value
+
+
+class ServicePeriodicTask(Model):
+    service_id = models.IntegerField(_("服务ID"))
+    crontab_config = models.JSONField(_("调度策略"), default=EMPTY_LIST)
+    celery_task_ids = models.JSONField(_("关联的定时任务列表"), default=EMPTY_LIST)
+    config = models.JSONField(_("其他额外配置信息,提单字段"), default=EMPTY_DICT)
+    timezone = models.CharField(_("时区"), default="UTC", max_length=LEN_SHORT)
+    total_run_count = models.IntegerField("执行次数", default=0)
+
+    objects = managers.PeriodicManager()
+    _objects = models.Manager()
+
+    def is_changed(self, cron_config):
+        """
+        {
+            "basic": {
+                day_of_week = "1,3,5",
+                time = "17:20, 18:20, 19:21"
+            },
+            "advanced": "20,30 17,18 * * *"
+        }
+        """
+        if self.crontab_config == cron_config:
+            return False
+
+        return True
+
+    @classmethod
+    def migrate_periodic_task(cls, project_key):
+        from django_celery_beat.models import PeriodicTask
+
+        tasks = cls._objects.filter(project_key=project_key, is_deleted=True)
+        for task in tasks:
+            if task.celery_task_ids:
+                PeriodicTask.objects.filter(id__in=task.celery_task_ids).delete()
+                task.celery_task_ids = []
+                task.save()
+
+    class Meta:
+        app_label = "service"
+        verbose_name = _("服务周期任务配置表")
+        verbose_name_plural = _("服务周期任务配置表")

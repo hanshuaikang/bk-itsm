@@ -26,6 +26,7 @@ import datetime
 import json
 import os
 
+from blueapps.utils.unique import uniqid
 from django.conf import settings
 from django.db import transaction
 from django.db.models.query import QuerySet
@@ -36,6 +37,8 @@ from itsm.component.constants import BUILTIN_SYSDICT_LIST, DEFAULT_ENGINE_VERSIO
 from itsm.component.constants import BUILTIN_SERVICES, OPEN, DEFAULT_PROJECT_PROJECT_KEY
 from itsm.component.db import managers
 from itsm.component.utils.basic import dotted_name
+
+from django_celery_beat.models import PeriodicTask, CrontabSchedule
 
 
 class CatalogQuerySet(QuerySet):
@@ -538,3 +541,87 @@ class ServiceCatalogManager(BaseMpttManager):
                             self.model.create_catalog(
                                 key=level3["key"], name=level3["name"], parent=l_2
                             )
+
+
+class PeriodicManager(managers.Manager):
+    def covert_crontab(self, cron_config):
+        """
+        {
+            "basic": {
+                day_of_week = "1,3,5",
+                time = "17:20, 18:20, 19:21"
+            },
+            "advanced": "20,30 17,18 * * *"
+        }
+        """
+
+        # 基础配置
+        basic_config = cron_config.get("basic")
+
+        day_of_week = basic_config.get("day_of_week", "*")
+        day_of_month = basic_config.get("day_of_month", "*")
+        month_of_year = basic_config.get("month_of_year", "*")
+        time_list = basic_config.get("time").split(",")
+        time_map = {}
+
+        cron_list = []
+        for time in time_list:
+            minute = time.split(":")[1]
+            time_map.setdefault(minute, []).append(time)
+
+        for minute, value in time_map.items():
+            hours = []
+            for v in value:
+                hour = v.split(":")[0]
+                hours.append(hour)
+
+            cron = {
+                "minute": minute,
+                "hour": ",".join(hours),
+                "day_of_week": day_of_week,
+                "day_of_month": day_of_month,
+                "month_of_year": month_of_year,
+            }
+            cron_list.append(cron)
+
+        return cron_list
+
+    def create_periodic_task(self, task, trigger_task=None):
+        # 删除所有旧的配置
+        PeriodicTask.objects.filter(id__in=task.celery_task_ids)
+
+        cron_list = self.covert_crontab(task.crontab_config)
+
+        celery_task_ids = []
+        for cron in cron_list:
+            schedule, _ = CrontabSchedule.objects.get_or_create(
+                minute=cron.get("minute", "*"),
+                hour=cron.get("hour", "*"),
+                day_of_week=cron.get("day_of_week", "*"),
+                day_of_month=cron.get("day_of_month", "*"),
+                month_of_year=cron.get("month_of_year", "*"),
+                timezone=task.timezone,
+            )
+            _ = schedule.schedule  # noqa
+
+            kwargs = {"service_id": task.service_id}
+            periodic_task = PeriodicTask.objects.create(
+                crontab=schedule,
+                name=uniqid(),
+                task=trigger_task or "itsm.service.tasks.periodic_task_start",
+                enabled=True,
+                kwargs=json.dumps(kwargs),
+            )
+            celery_task_ids.append(periodic_task.id)
+
+        task.celery_task_ids = celery_task_ids
+        task.save()
+
+    def delete_periodic_task(self, service_id):
+        # 删除所有旧的配置
+
+        task = self.get(service_id=service_id)
+        # 删除所有旧的配置
+        PeriodicTask.objects.filter(id__in=task.celery_task_ids).delete()
+
+        task.delete()
