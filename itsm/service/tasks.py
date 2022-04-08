@@ -26,8 +26,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 __author__ = "蓝鲸智云"
 __copyright__ = "Copyright © 2012-2020 Tencent BlueKing. All Rights Reserved."
 
-from celery.app import task
-
+from celery import task
 from common.log import logger
 from itsm.service.models import ServicePeriodicTask
 from itsm.ticket.serializers import TicketSerializer
