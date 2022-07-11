@@ -718,3 +718,22 @@ class TicketViewSet(ApiGatewayMixin, component_viewsets.ModelViewSet):
         sign_tasks = SignTask.objects.filter(status_id=status.id)
         processors = [task.processor for task in sign_tasks]
         return Response({"approver": ",".join(processors)})
+
+    @action(detail=False, methods=["post"])
+    @catch_openapi_exception
+    def sops_callback(self, request, *args, **kwargs):
+        token = request.query_params.get("token", "")
+        sn = request.query_params.get("sn")
+        state_id = request.query_params.get("state_id")
+        try:
+            ticket = Ticket.objects.get(sn=sn)
+        except Ticket.DoesNotExist:
+            raise ParamError("sn[{}]对应的单据不存在！".format(sn))
+        message = settings.APP_CODE + "_" + settings.SECRET_KEY
+        is_valid = AESVerification.verify(message, bytes(token, encoding="utf-8"))
+        if not is_valid:
+            logger.info("[sops_callback] 回调接口校验失败，token非法,token={}".format(token))
+            raise ParamError("[sops_callback] 回调接口校验失败，token非法")
+            # 回调蓝鲸插件
+        ticket.activity_callback(state_id, "system", [])
+        return Response()

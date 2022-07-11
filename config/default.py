@@ -884,3 +884,7 @@ BK_API_URL_TMPL = os.getenv("BK_API_URL_TMPL")
 
 # 蓝鲸插件授权过滤 APP
 PLUGIN_DISTRIBUTOR_NAME = os.getenv("BKAPP_PLUGIN_DISTRIBUTOR_NAME", APP_CODE)
+
+OPEN_SOPS_CALLBACK = (
+    True if os.getenv("BKAPP_OPEN_SOPS_CALLBACK", "false").lower() == "true" else False
+)

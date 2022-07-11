@@ -24,6 +24,10 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """
 
 import logging
+from urllib.parse import quote
+
+from django.conf import settings
+from common.cipher import AESVerification
 from itsm.component.constants import SYSTEM_OPERATE, TRANSITION_OPERATE, NODE_FAILED
 from itsm.component.esb.esbclient import client_backend
 from itsm.ticket.serializers import StatusSerializer
@@ -108,6 +112,20 @@ class BkOpsService(ItsmBaseService):
                 retry=False,
             )
 
+    def generate_callback_url(self, ticket_sn, state_id):
+        token = str(
+            AESVerification.gen_signature(
+                settings.APP_CODE + "_" + settings.SECRET_KEY
+            ),
+            encoding="utf-8",
+        )
+        # 对特殊字符进行url编码
+        token = quote(token)
+        url = "{}openapi/ticket/sops_callback/?token={}&sn={}&state_id={}".format(
+            settings.FRONTEND_URL.replace("https", "http"), token, ticket_sn, state_id
+        )
+        return url
+
     def execute(self, data, parent_data):
         if super(BkOpsService, self).execute(data, parent_data):
             return True
@@ -157,6 +175,12 @@ class BkOpsService(ItsmBaseService):
         self.update_info(current_node, sops_result, task_params=task_params)
 
         try:
+            if settings.OPEN_SOPS_CALLBACK:
+                task_params["callback_url"] = self.generate_callback_url(
+                    ticket.sn, state_id
+                )
+                self.interval = None
+                self.__multi_callback_enabled__ = True
             create_result = client_backend.sops.create_task(task_params)
         except Exception as error:
             logger.info(
